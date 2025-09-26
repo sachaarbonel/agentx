@@ -1,0 +1,18 @@
+[package]
+name = "agentx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "gzip", "rustls-tls"] }
+thiserror = "1"
+chromiumoxide = { version = "0.7", features = ["tokio"] }
+futures = "0.3"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+anyhow = "1"
+
