@@ -346,6 +346,7 @@ where
                 error: None,
                 timestamp_ms: Instant::now().duration_since(start).as_millis(),
             };
+            info!(step = i, plan = %thought.plan, has_action = %maybe_action.is_some(), "agent step");
 
             if maybe_action.is_none() && !thought.plan.trim().is_empty() {
                 info!(step = i, "agent message: {}", thought.plan.trim());
@@ -365,8 +366,10 @@ where
                     step_log.result_hint = "denied".into();
                     self.memory.write_step(&run_id, &step_log).await?;
                     steps.push(step_log);
+                    info!(step = i, "action denied by policy");
                     continue;
                 }
+                info!(step = i, action = ?action, "action approved");
             }
 
             let result = if let Some(action) = maybe_action {
@@ -394,6 +397,7 @@ where
                     last_error = None;
                     self.memory.write_step(&run_id, &step_log).await?;
                     steps.push(step_log);
+                    info!(step = i, result = %"ok", changed = out.changed, url = ?last_snapshot.url, "action result");
                 }
                 Err(err) => {
                     warn!("step {} failed: {}", i, err);
@@ -598,6 +602,13 @@ impl ChromiumComputer {
             .map_err(|e| AgentError::Other(e.to_string()))?;
         Ok(Self { browser })
     }
+
+    pub async fn connect(ws_url: &str) -> Result<Self, AgentError> {
+        let browser = Browser::connect(ws_url)
+            .await
+            .map_err(|e| AgentError::Other(e.to_string()))?;
+        Ok(Self { browser })
+    }
 }
 
 #[async_trait]
@@ -607,6 +618,8 @@ impl Computer for ChromiumComputer {
             .goto(url)
             .await
             .map_err(|e| AgentError::Other(e.to_string()))?;
+        // Ensure links open in same tab to keep control
+        let _ = self.browser.enable_single_tab_mode().await;
         self.browser
             .wait_for_stable()
             .await
@@ -714,6 +727,8 @@ impl Computer for ChromiumComputer {
                 ));
             }
         }
+        // Keep to same tab post-action as actions might trigger new tabs
+        let _ = self.browser.enable_single_tab_mode().await;
         Ok(ActionResult {
             snapshot: self.snapshot().await?,
             changed: true,
@@ -744,16 +759,60 @@ impl Default for CuaState {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CuaReasonerConfig {
+    pub stop_on_message: bool,
+    pub auto_confirm_text: Option<String>,
+}
+
+impl Default for CuaReasonerConfig {
+    fn default() -> Self {
+        Self { stop_on_message: true, auto_confirm_text: None }
+    }
+}
+
 #[derive(Clone)]
 pub struct CuaReasoner {
     client: CuaClient,
     instructions: String,
     state: std::sync::Arc<Mutex<CuaState>>,
+    cfg: CuaReasonerConfig,
 }
 
 impl CuaReasoner {
     pub fn new(client: CuaClient, instructions: impl Into<String>) -> Self {
-        Self { client, instructions: instructions.into(), state: std::sync::Arc::new(Mutex::new(CuaState::default())) }
+        Self { client, instructions: instructions.into(), state: std::sync::Arc::new(Mutex::new(CuaState::default())), cfg: CuaReasonerConfig::default() }
+    }
+
+    pub fn with_config(client: CuaClient, instructions: impl Into<String>, cfg: CuaReasonerConfig) -> Self {
+        Self { client, instructions: instructions.into(), state: std::sync::Arc::new(Mutex::new(CuaState::default())), cfg }
+    }
+
+    fn compose_instructions(base: &str, goal: &Goal) -> String {
+        let mut s = String::new();
+        if !base.trim().is_empty() {
+            s.push_str(base);
+            s.push_str("\n\n");
+        }
+        s.push_str("Goal: ");
+        s.push_str(&goal.task);
+        if !goal.constraints.is_empty() {
+            s.push_str("\nConstraints:\n");
+            for c in &goal.constraints {
+                s.push_str("- ");
+                s.push_str(c);
+                s.push('\n');
+            }
+        }
+        if !goal.success_criteria.is_empty() {
+            s.push_str("Success criteria:\n");
+            for c in &goal.success_criteria {
+                s.push_str("- ");
+                s.push_str(c);
+                s.push('\n');
+            }
+        }
+        s
     }
 
     fn map_cua_action(action: CuaAction) -> Option<Action> {
@@ -776,7 +835,7 @@ impl CuaReasoner {
 impl Reasoner for CuaReasoner {
     async fn think(
         &self,
-        _goal: &Goal,
+        goal: &Goal,
         _memory: &Memory,
         snapshot: &Snapshot,
         _last_error: Option<&AgentError>,
@@ -810,7 +869,9 @@ impl Reasoner for CuaReasoner {
                     st.pending_call_id = None;
                     st.pending_safety_checks.clear();
                     st.awaiting_screenshot = false;
-                    st.done_message = Some(text.clone());
+                    if self.cfg.stop_on_message {
+                        st.done_message = Some(text.clone());
+                    }
                     return Ok(Thought { plan: text, action: None, rationale: None });
                 }
                 CuaOutput::ComputerCall { call_id, action, requires_screenshot, response_id, safety_checks } => {
@@ -833,7 +894,10 @@ impl Reasoner for CuaReasoner {
         }
 
         // Start or continue a turn
-        let input = crate::cua::TurnInput { instructions: self.instructions.clone(), current_url: snapshot.url.clone() };
+        let composed = Self::compose_instructions(&self.instructions, goal);
+        // Only append extra_user_text when not mid-thread to avoid tool-output expectation mismatches
+        let extra = if st.previous.is_none() { self.cfg.auto_confirm_text.clone() } else { None };
+        let input = crate::cua::TurnInput { instructions: composed, current_url: snapshot.url.clone(), extra_user_text: extra };
         let out = self
             .client
             .turn(input, st.previous.as_ref())
@@ -843,7 +907,9 @@ impl Reasoner for CuaReasoner {
         match out {
             CuaOutput::Message { text } => {
                 st.previous = st.previous.take();
-                st.done_message = Some(text.clone());
+                if self.cfg.stop_on_message {
+                    st.done_message = Some(text.clone());
+                }
                 Ok(Thought { plan: text, action: None, rationale: None })
             }
             CuaOutput::ComputerCall { call_id, action, requires_screenshot, response_id, safety_checks } => {
@@ -869,6 +935,10 @@ impl Reasoner for CuaReasoner {
         _memory: &Memory,
     ) -> Result<bool, AgentError> {
         let st = self.state.lock().await;
-        Ok(st.done_message.is_some())
+        if self.cfg.stop_on_message {
+            Ok(st.done_message.is_some())
+        } else {
+            Ok(false)
+        }
     }
 }

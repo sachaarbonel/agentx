@@ -38,6 +38,7 @@ pub struct ResponseId(pub String);
 pub struct TurnInput {
     pub instructions: String,
     pub current_url: Option<String>,
+    pub extra_user_text: Option<String>,
 }
 
 #[derive(Debug)]
@@ -98,6 +99,11 @@ impl CuaClient {
             ]}
           ]
         });
+        if let Some(extra) = input.extra_user_text {
+            if let Some(arr) = req.pointer_mut("/input/0/content").and_then(|v| v.as_array_mut()) {
+                arr.push(json!({ "type": "input_text", "text": extra }));
+            }
+        }
 
         // Include the hosted computer use tool only for computer-use models
         let wants_computer_tool = self.cfg.model.contains("computer-use");

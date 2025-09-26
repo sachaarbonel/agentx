@@ -31,6 +31,27 @@ pub struct Browser {
 }
 
 impl Browser {
+    pub async fn connect(ws_url: &str) -> Result<Self> {
+        let (browser, mut handler) = OxideBrowser::connect(ws_url).await?;
+        tokio::spawn(async move {
+            while let Some(_ev) = handler.next().await {}
+        });
+        let page = browser.new_page("about:blank").await?;
+        // Ensure a non-zero viewport to avoid screenshot 0-width errors
+        let _ = page
+            .execute(
+                SetDeviceMetricsOverrideParams::builder()
+                    .width(1280)
+                    .height(800)
+                    .device_scale_factor(1.0)
+                    .mobile(false)
+                    .build()
+                    .unwrap(),
+            )
+            .await;
+        Ok(Self { page, _browser: browser })
+    }
+
     pub async fn launch(cfg: BrowserConfig) -> Result<Self> {
         let mut builder = chromiumoxide::browser::BrowserConfig::builder();
         if !cfg.headless {
@@ -77,6 +98,28 @@ impl Browser {
     pub async fn goto(&self, url: &str) -> Result<()> {
         self.page.goto(url).await?;
         self.page.wait_for_navigation().await?;
+        Ok(())
+    }
+
+    pub async fn enable_single_tab_mode(&self) -> Result<()> {
+        // Redirect window.open and target=_blank navigations into the same tab
+        let js = r#"(
+            function() {
+              try {
+                const origOpen = window.open;
+                window.open = function(u, n, f) { try { if (u) location.href = u; } catch(e) {} return null; };
+                document.addEventListener('click', function(e){
+                  const a = e.target && e.target.closest ? e.target.closest('a[target="_blank"]') : null;
+                  if (a && a.href) { e.preventDefault(); try { location.href = a.href; } catch(_) {} }
+                }, true);
+              } catch (_) {}
+            }
+        )()"#;
+        let eval = EvaluateParams::builder()
+            .expression(js)
+            .build()
+            .map_err(|e| anyhow::anyhow!(e))?;
+        self.page.execute(eval).await?;
         Ok(())
     }
 
