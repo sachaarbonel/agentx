@@ -59,8 +59,6 @@ When adding a new tool action end-to-end:
 - Validate builds with `cargo build` and examples with `cargo run --example quickstart` (requires API key and network).
 
 ## Non-goals / Do Not
-- Do not introduce breaking changes to the public API without explicit request.
-- Do not add heavy transitive dependencies for convenience.
 - Do not remove the Chromium profile isolation or hardcode OS-specific paths.
 - Do not print secrets or include them in repository files.
 

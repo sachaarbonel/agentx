@@ -15,4 +15,5 @@ base64 = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 anyhow = "1"
-
+async-trait = "0.1"
+nanoid = "0.4"

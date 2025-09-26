@@ -2,11 +2,12 @@ use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chromiumoxide::browser::Browser as OxideBrowser;
 use chromiumoxide::cdp::js_protocol::runtime::EvaluateParams;
+use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
 };
 use chromiumoxide::layout::Point;
-use chromiumoxide::page::{Page, ScreenshotParams};
+use chromiumoxide::page::{Page};
 use futures::StreamExt;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -57,6 +58,19 @@ impl Browser {
         if let Some(ua) = cfg.user_agent {
             page.set_user_agent(ua).await?;
         }
+        // Ensure a non-zero viewport to avoid screenshot 0-width errors
+        let _ = page
+            .execute(
+                SetDeviceMetricsOverrideParams::builder()
+                    .width(1280)
+                    .height(800)
+                    .device_scale_factor(1.0)
+                    .mobile(false)
+                    .build()
+                    .unwrap(),
+            )
+            .await;
+        // no SetVisibleSize in chromiumoxide 0.7; metrics override is enough
         Ok(Self { page, _browser: browser })
     }
 
@@ -178,16 +192,42 @@ impl Browser {
 
     pub async fn screenshot_b64(&self) -> Result<String> {
         use chromiumoxide::page::ScreenshotParamsBuilder;
-        let bytes = self
-            .page
-            .screenshot(
-                ScreenshotParamsBuilder::default()
-                    .full_page(true)
-                    .omit_background(true)
-                    .build(),
-            )
-            .await?;
-        Ok(STANDARD.encode(bytes))
+        let take = || async {
+            self
+                .page
+                .screenshot(
+                    ScreenshotParamsBuilder::default()
+                        .full_page(true)
+                        .omit_background(true)
+                        .build(),
+                )
+                .await
+        };
+        match take().await {
+            Ok(bytes) => Ok(STANDARD.encode(bytes)),
+            Err(e) => {
+                let msg = format!("{}", e);
+                if msg.contains("0 width") || msg.contains("0 height") {
+                    // Force viewport and retry once
+                    let _ = self
+                        .page
+                        .execute(
+                            SetDeviceMetricsOverrideParams::builder()
+                                .width(1280)
+                                .height(800)
+                                .device_scale_factor(1.0)
+                                .mobile(false)
+                                .build()
+                                .unwrap(),
+                        )
+                        .await;
+                    sleep(Duration::from_millis(50)).await;
+                    let bytes = take().await?;
+                    return Ok(STANDARD.encode(bytes));
+                }
+                Err(anyhow::anyhow!(e))
+            }
+        }
     }
 
     pub async fn wait_for_stable(&self) -> Result<()> {
