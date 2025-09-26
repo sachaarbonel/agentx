@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs as async_fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 
@@ -233,6 +234,7 @@ where
     policy: P,
     cfg: AgentConfig,
     snapshot_store: Option<Arc<dyn SnapshotStore>>, // optional sink for snapshots
+    artifacts_dir: Option<PathBuf>,                  // optional dir for report.json alongside screenshots
 }
 
 impl<C, R, M, P> Agent<C, R, M, P>
@@ -250,6 +252,7 @@ where
             policy,
             cfg,
             snapshot_store: None,
+            artifacts_dir: None,
         }
     }
 
@@ -274,6 +277,14 @@ where
         let mut steps: Vec<StepLog> = Vec::new();
         let mut last_error: Option<AgentError> = None;
 
+        // Graceful shutdown: capture Ctrl-C and mark cancellation
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_watch = cancelled.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            cancel_watch.store(true, Ordering::SeqCst);
+        });
+
         self.memory.write_run_start(&run_id, &goal).await?;
 
         let mut last_snapshot = match start_url {
@@ -292,6 +303,23 @@ where
         let deadline = goal.timeout_ms.map(|ms| start + Duration::from_millis(ms as u64));
 
         for i in 0..self.cfg.max_steps {
+            if cancelled.load(Ordering::SeqCst) {
+                metrics.success = false;
+                metrics.steps = i;
+                metrics.time_ms = start.elapsed().as_millis();
+                return self
+                    .finish(
+                        run_id,
+                        goal,
+                        steps,
+                        metrics,
+                        last_snapshot,
+                        RunStatus::Error,
+                        "Cancelled by user",
+                        None,
+                    )
+                    .await;
+            }
             if let Some(d) = deadline {
                 if Instant::now() >= d {
                     return self
@@ -331,10 +359,30 @@ where
                     .await;
             }
 
-            let thought = self
+            let thought = match self
                 .reasoner
                 .think(&goal, &memory, &last_snapshot, last_error.as_ref())
-                .await?;
+                .await
+            {
+                Ok(t) => t,
+                Err(err) => {
+                    metrics.success = false;
+                    metrics.steps = i;
+                    metrics.time_ms = start.elapsed().as_millis();
+                    return self
+                        .finish(
+                            run_id,
+                            goal,
+                            steps,
+                            metrics,
+                            last_snapshot,
+                            RunStatus::Error,
+                            "Reasoner error",
+                            Some(format!("{}", err)),
+                        )
+                        .await;
+                }
+            };
             let maybe_action = thought.action.clone();
             let mut step_log = StepLog {
                 step: i,
@@ -349,8 +397,17 @@ where
             info!(step = i, plan = %thought.plan, has_action = %maybe_action.is_some(), "agent step");
 
             if maybe_action.is_none() && !thought.plan.trim().is_empty() {
-                info!(step = i, "agent message: {}", thought.plan.trim());
-                step_log.result_hint = "message".into();
+                let plan_text = thought.plan.trim();
+                let lower = plan_text.to_lowercase();
+                let refusal = lower.contains("unable to")
+                    || lower.contains("can't ")
+                    || lower.contains("cannot ")
+                    || lower.contains("won't ")
+                    || lower.contains("not able to");
+                let category = if refusal { "message_refusal" } else { "message" };
+                let current_url = last_snapshot.url.clone();
+                info!(step = i, category = %category, url = ?current_url, "agent message: {}", plan_text);
+                step_log.result_hint = category.into();
                 self.memory.write_step(&run_id, &step_log).await?;
                 steps.push(step_log);
                 continue;
@@ -448,6 +505,24 @@ where
             error: err.or_else(|| Some(msg.to_string())),
         };
         self.memory.write_run_end(&run_id, &report).await?;
+        if let Some(dir) = &self.artifacts_dir {
+            let run_dir = dir.join(&run_id);
+            if let Err(e) = async_fs::create_dir_all(&run_dir).await {
+                warn!("artifacts create_dir failed: {}", e);
+            } else {
+                let report_path = run_dir.join("report.json");
+                match serde_json::to_vec_pretty(&report) {
+                    Ok(buf) => {
+                        if let Err(e) = async_fs::write(&report_path, buf).await {
+                            warn!("artifacts write report failed: {}", e);
+                        } else {
+                            info!(run_id = %run_id, report = %report_path.display(), screenshots_dir = %run_dir.display(), "artifacts saved");
+                        }
+                    }
+                    Err(e) => warn!("artifacts serialize report failed: {}", e),
+                }
+            }
+        }
         info!("run {} finished", run_id);
         Ok(report)
     }
@@ -585,6 +660,11 @@ impl<C: Computer, R: Reasoner> Agent<C, R, NullMemoryStore, AllowAllPolicy> {
 
     pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
         self.snapshot_store = Some(store);
+        self
+    }
+
+    pub fn with_artifacts_dir<Pth: Into<PathBuf>>(mut self, dir: Pth) -> Self {
+        self.artifacts_dir = Some(dir.into());
         self
     }
 }
