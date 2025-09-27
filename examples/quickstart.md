@@ -1,4 +1,4 @@
-# Quickstart (agentx examples/quickstart)
+# Quickstart (glass-hands examples/quickstart)
 
 This example runs a computer-use agent that opens Chromium/Chrome and completes a simple billing task on the OpenAI platform.
 
@@ -21,7 +21,7 @@ export RUST_LOG=info            # optional, enables step-by-step logs
 cargo run --example quickstart
 ```
 
-The example starts at `https://platform.openai.com` and pursues the goal embedded in `examples/quickstart.rs`. Snapshots go to a temp dir like `/tmp/agentx_runs/<run_id>/`.
+The example starts at `https://platform.openai.com` and pursues the goal embedded in `examples/quickstart.rs`. Snapshots go to a temp dir like `/tmp/glass_hands_runs/<run_id>/`.
 
 ## Reuse an existing Chrome session (CHROME_WS_URL)
 
@@ -30,7 +30,7 @@ Start Chrome with remote debugging and a dedicated profile:
 ```bash
 nohup /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
   --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/agentx-devtools \
+  --user-data-dir=/tmp/glass-hands-devtools \
   >/dev/null 2>&1 &
 ```
 

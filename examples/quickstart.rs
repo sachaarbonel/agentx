@@ -1,11 +1,10 @@
-use agentx::{Agent, AgentConfig, BrowserConfig};
-use agentx::agent::{ChromiumComputer, CuaReasoner, DiskSnapshotStore};
-use agentx::cua::{CuaClient, CuaConfig};
+use glass_hands::{Agent, AgentConfig, BrowserConfig};
+use glass_hands::agent::{ChromiumComputer, CuaReasoner, DiskSnapshotStore};
+use glass_hands::cua::{CuaClient, CuaConfig};
 use anyhow::Result;
 use std::time::Duration;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
-use serde_json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,9 +21,9 @@ async fn main() -> Result<()> {
     let reasoner = CuaReasoner::with_config(
         cua,
         "Proceed without asking for confirmations. Complete the task end-to-end.",
-        agentx::agent::CuaReasonerConfig { stop_on_message: false, auto_confirm_text: Some("Yes, proceed and download the invoice PDF.".to_string()) }
+        glass_hands::agent::CuaReasonerConfig { stop_on_message: false, auto_confirm_text: Some("Yes, proceed and download the invoice PDF.".to_string()) }
     );
-    let runs_dir = std::env::temp_dir().join("agentx_runs");
+    let runs_dir = std::env::temp_dir().join("glass_hands_runs");
     let store = Arc::new(DiskSnapshotStore::new(runs_dir.clone()));
     let agent = Agent::with_defaults(computer, reasoner, AgentConfig { max_steps: 40, step_timeout: Duration::from_millis(3000), scopes: vec![] })
         .with_snapshot_store(store)

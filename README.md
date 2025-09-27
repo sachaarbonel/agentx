@@ -1,6 +1,7 @@
-# agentx
+# Glass Hands
+![Glass Hands](assets/glass_hands_logo.png)
 
-Build browser-native computer-use agents in Rust. Agentx connects OpenAI computer-use (Responses API) to a real Chromium instance via CDP, turning plain-text goals into deterministic browser actions.
+Build browser-native computer-use agents in Rust. glass-hands connects OpenAI computer-use (Responses API) to a real Chromium instance via Chrome DevTools Protocol, turning plain-text goals into deterministic browser actions.
 
 ## Get started in 30 seconds
 1) Requirements
@@ -40,7 +41,7 @@ See a complete, minimal program in `examples/quickstart.rs`. It shows how to:
 
 ## Troubleshooting
 - Set `OPENAI_API_KEY` before running
-- If Chromium profile lock errors occur, ensure no zombie Chrome processes remain (agentx uses an isolated user-data-dir per run)
+- If Chromium profile lock errors occur, ensure no zombie Chrome processes remain (glass-hands uses an isolated user-data-dir per run)
 - Width/height tool field differences are normalized internally
 
 ## Security

@@ -3,7 +3,7 @@
 Scope: This file applies to the entire repository.
 
 ## Overview
-- This crate (`agentx`) integrates a hosted computer-use model via the OpenAI Responses API and drives a Chromium browser via `chromiumoxide`.
+- This crate (`glass-hands`) integrates a hosted computer-use model via the OpenAI Responses API and drives a Chromium browser via `chromiumoxide`.
 - Core modules:
   - `src/cua.rs`: API client, request/response shaping, action decoding.
   - `src/browser.rs`: Browser control helpers (navigation, input, screenshots).
